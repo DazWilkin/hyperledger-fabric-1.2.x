@@ -1,0 +1,210 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" . }}-bootstrap
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" . }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" . }}
+    chart: {{ include "hyperledger-fabric.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: bootstrap
+spec:
+  template:
+    metadata:
+      labels:
+        app: {{ include "hyperledger-fabric.name" . }}
+        chart: {{ include "hyperledger-fabric.chart" . }}
+        release: {{ .Release.Name }}
+        heritage: {{ .Release.Service }}
+        component: bootstrap
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+      - name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+        persistentVolumeClaim:
+          claimName: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+      - name: {{ include "hyperledger-fabric.fullname" . }}-crypto-config
+        configMap:
+          name:  {{ include "hyperledger-fabric.fullname" . }}-crypto-config
+      - name: {{ include "hyperledger-fabric.fullname" . }}-configtx
+        configMap:
+          name: {{ include "hyperledger-fabric.fullname" . }}-configtx
+
+{{/*
+      Here is a set of initContainers
+      These are run sequentially x-th completes before (x+1)th begins
+*/}}
+
+      initContainers:
+
+{{/* 
+*/}}
+
+      - name: {{/*{{ .Chart.Name }}-*/}}cryptogen
+        image: "{{ .Values.image.cryptogen.repository }}:{{ .Values.image.cryptogen.tag }}"
+        imagePullPolicy: {{ .Values.image.cryptogen.pullPolicy }}
+        args:
+        - generate
+        - --config=/config/crypto-config.yaml
+        - --output=/shared/crypto-config
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+        - mountPath: /config
+          name: {{ include "hyperledger-fabric.fullname" . }}-crypto-config
+
+{{/* 
+      Unfortunately, configtxgen requires configtx.yaml and crypto-config to be in the same directory
+      Moving configtx.yaml from the ConfigMap volume mount (/config) to /shared to achieve this
+      initContainers are sequential; this container will be run before the following containers that use it
+*/}}
+
+      - name: {{/*{{ .Chart.Name }}-*/}}copy-config
+        image: alpine
+        imagePullPolicy: IfNotPresent
+        args:
+        - cp
+        - /config/configtx.yaml
+        - /shared
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+        - mountPath: /config
+          name: {{ include "hyperledger-fabric.fullname" . }}-configtx
+
+{{/* 
+      The first of 2+n configtxgen commands:
+      This creates the Orderer Genesis Block (/shared/genesis.block)
+*/}}
+
+      - name: {{/*{{ .Chart.Name }}-*/}}configtxgen-genesis
+        image: "{{ .Values.image.configtxgen.repository }}:{{ .Values.image.configtxgen.tag }}"
+        imagePullPolicy: {{ .Values.image.configtxgen.pullPolicy }}
+        args: 
+        - -profile
+        - $(ORDERER_PROFILE)
+        - -outputBlock
+        - /shared/genesis.block
+        env:
+        - name: FABRIC_CFG_PATH
+          value: "/shared"
+        - name: ORDERER_PROFILE
+          value: TwoOrgsOrdererGenesis
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+        - mountPath: /config
+          name: {{ include "hyperledger-fabric.fullname" . }}-configtx
+
+{{/* 
+      The second of 2+n configtxgen commands:
+      This creates a Channel Configuration Transaction (/shared/channel.tx)
+*/}}
+
+      - name: {{/*{{ .Chart.Name }}-*/}}configtxgen-channel
+        image: "{{ .Values.image.configtxgen.repository }}:{{ .Values.image.configtxgen.tag }}"
+        imagePullPolicy: {{ .Values.image.configtxgen.pullPolicy }}
+        args:
+        - -profile
+        - $(CHANNEL_PROFILE)
+        - -outputCreateChannelTx
+        - /shared/channel.tx
+        - -channelID
+        - $(CHANNEL_ID)
+        env:
+        - name: FABRIC_CFG_PATH
+          value: "/shared"
+        - name: CHANNEL_ID
+          value: channel
+        - name: CHANNEL_PROFILE
+          value: TwoOrgsChannel
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+        - mountPath: /config
+          name: {{ include "hyperledger-fabric.fullname" . }}-configtx
+
+{{/* 
+      The next n configtxgen commands:
+      One command is needed for each Org for each Anchor Peer
+      This defines each Anchor Peer
+*/}}
+
+{{- range $org := .Values.configtx.Organizations }}
+{{/* 
+          NB Within the range, need to use "$" instead of "." to scope the include correctly
+*/}}  
+      - name: anchor-{{ $org.ID | lower }}
+        image: "{{ $.Values.image.configtxgen.repository }}:{{ $.Values.image.configtxgen.tag }}"
+        imagePullPolicy: {{ $.Values.image.configtxgen.pullPolicy }}
+        args:
+        - -profile
+        - $(CHANNEL_PROFILE)
+        - -outputAnchorPeersUpdate
+        - /shared/$(ORG_ID).anchors.tx
+        - -channelID
+        - $(CHANNEL_ID)
+        - -asOrg
+        - $(ORG_ID)
+        env:
+        - name: FABRIC_CFG_PATH
+          value: "/shared"
+        - name: CHANNEL_ID
+          value: channel
+        - name: CHANNEL_PROFILE
+          value: TwoOrgsChannel
+        - name: ORG_ID
+          value: {{ $org.ID }}
+        volumeMounts:
+        - mountPath: /shared
+{{/* 
+          NB Within the range, need to use "$" instead of "." to scope the include correctly
+*/}}  
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+{{- end }}
+
+{{/*
+      Here 
+*/}}
+
+      containers:
+
+      - name: {{/*{{ .Chart.Name }}-*/}}bootstrapped
+        image: alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - touch
+        - /shared/bootstrapped
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+
+      - name: {{/*{{ .Chart.Name }}-*/}}inspect-genesis
+        image: "{{ $.Values.image.configtxgen.repository }}:{{ $.Values.image.configtxgen.tag }}"
+        imagePullPolicy: {{ $.Values.image.configtxgen.pullPolicy }}
+        args:
+        - configtxgen
+        - -inspectBlock
+        - /shared/genesis.block
+        env:
+        - name: FABRIC_CFG_PATH
+          value: "/shared"
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+
+      - name: {{/*{{ .Chart.Name }}-*/}}inspect-channel
+        image: "{{ $.Values.image.configtxgen.repository }}:{{ $.Values.image.configtxgen.tag }}"
+        imagePullPolicy: {{ $.Values.image.configtxgen.pullPolicy }}
+        args:
+        - configtxgen
+        - -inspectChannelCreateTx
+        - /shared/channel.tx
+        env:
+        - name: FABRIC_CFG_PATH
+          value: "/shared"
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc

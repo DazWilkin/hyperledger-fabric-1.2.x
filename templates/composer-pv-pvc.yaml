@@ -1,0 +1,39 @@
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" . }}-composer-pv
+  labels:
+    app: {{ .Chart.Name }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    type: local
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: {{ include "hyperledger-fabric.fullname" . }}-nfs.{{ .Release.Namespace }}.svc.cluster.local
+    path: "/"
+...
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" . }}-composer-pvc
+  labels:
+    app: {{ .Chart.Name }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: {{ include "hyperledger-fabric.fullname" . }}-composer-pv
+...

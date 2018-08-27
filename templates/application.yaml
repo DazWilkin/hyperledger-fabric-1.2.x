@@ -1,0 +1,51 @@
+---
+apiVersion: app.k8s.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" . }}-application
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" . }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+spec:
+  type: hyperledger-fabric
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" . }}
+      app.kubernetes.io/version: {{ .Chart.Version }}
+  componentKinds:
+  # - group: core
+  #   kind: Service
+  #- group: apps
+  -  kind: Deployment
+  -  kind: Job
+  -  kind: Service
+  -  kind: PersistentVolumeClaims
+  version: {{ .Values.fabric.binaries }}
+  description: >
+    Hyperledger Fabric is a blockchain framework implementation and one of the Hyperledger projects hosted by The Linux Foundation. 
+    Intended as a foundation for developing applications or solutions with a modular architecture, Hyperledger Fabric allows components, 
+    such as consensus and membership services, to be plug-and-play. Hyperledger Fabric leverages container technology to host smart 
+    contracts called “chaincode” that comprise the application logic of the system. Hyperledger Fabric was initially contributed 
+    by Digital Asset and IBM, as a result of the first hackathon
+  maintainers:
+  - name: hyperledger-fabric-maintainers
+    email: hyperledger+fabric@google.com
+  owners:
+  - "Hyperledger Fabric <hyperledger+fabric@google.com"
+  keywords:
+  - "blockchain"
+  - "fabric"
+  - "hyperledger"
+  links:
+  - description: About
+    url: "https://www.hyperledger.org/projects/fabric"
+  - description: Docs
+    url: "http://hyperledger-fabric.readthedocs.io"
+  - description: GitHub
+    url: "https://github.com/hyperledger/fabric"
+  notes: |-
+    
+    You should be able to access the Hyperledger Fabric "network.name...
+
+    You should be able to access Hyperledger Composer ...
+...
