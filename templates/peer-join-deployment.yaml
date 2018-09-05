@@ -1,0 +1,168 @@
+{{/*
+    Iterate over each Org defined in cryptoconfig
+    This should match the Organizations defined in configtx
+    Because of ranges, need to explicitly reference root ($)
+*/}}
+{{- range $i, $org := .Values.cryptoconfig.PeerOrgs }}
+{{- $orgName := $org.Name | lower }}
+{{- $orgFullName  := printf "%s.example.com" $orgName }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" $ }}-join-{{ $orgName }}
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" $ }}
+    app.kubernetes.io/version: {{ $.Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" $ }}
+    chart: {{ include "hyperledger-fabric.chart" $ }}
+    release: {{ $.Release.Name }}
+    heritage: {{ $.Release.Service }}
+    component: join
+    org: {{ $orgName }}
+spec:
+  template:
+    metadata:
+      labels:
+        app: {{ include "hyperledger-fabric.name" $ }}
+        chart: {{ include "hyperledger-fabric.chart" $ }}
+        release: {{ $.Release.Name }}
+        heritage: {{ $.Release.Service }}
+        component: join
+        org: {{ $orgName }}
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+      - name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+        persistentVolumeClaim:
+          claimName: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+
+      initContainers:
+
+      - name: await-channel-created
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command:
+        - ash
+        - -c
+        - |
+          while [ ! -f /shared/channel_created ]; do
+            echo Awaiting /shared/channel_created
+            sleep 15s
+          done
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+
+{{/*
+    Iterate over the peers in each Organization
+    Number of peers is set in cryptoconfig.Template.Count
+    Need to disambiguate peers
+    Each is thus named by prefixing the iterator with 'peer'
+    And by using the Org's domain as defined in cryptoconfig
+    E.g. peerX.orgY.example.com
+*/}}
+
+      containers:
+
+{{- range $j, $peerID := until ( $org.Template.Count | int) }}
+{{/*
+    Various permutations of the Peer's ID, name and fullname
+    And the Org's name and fullname are required
+    Unclear how best to generalize the domain name (example.com)
+    orgFullName  == orgY.example.com
+    peerName     == peer0, peer1, ... peerX
+    peerFullName == peerX.orgY.example.com
+*/}}
+{{- $peerName     := printf "peer%d" $peerID }}
+{{- $peerFullName := printf "%s.%s" $peerName $orgFullName }}
+      - name: channel-join-{{ $peerName }}
+        image: "{{ $.Values.image.peer.repository }}:{{ $.Values.image.peer.tag }}"
+        imagePullPolicy: {{ $.Values.image.peer.pullPolicy }}
+        workingDir: /shared #/opt/gopath/src/github.com/hyperledger/fabric/peer
+        command:
+        - peer
+        - channel
+        - join
+        args:
+        - --blockpath=/shared/channel.block
+        env:
+        - name: CORE_PEER_ID
+          value: {{ $orgName }}-{{ $peerName }}
+        - name: CORE_PEER_ADDRESS
+          value: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-{{ $peerName }}:7051
+        - name: CORE_PEER_MSPCONFIGPATH
+          value: /shared/crypto-config/peerOrganizations/{{ $orgFullName }}/users/Admin@{{ $orgFullName }}/msp
+{{/*
+        Always peer0 but in the current Org
+*/}}
+        - name: CORE_PEER_TLS_ROOTCERT_FILE
+          value: /shared/crypto-config/peerOrganizations/{{ $orgFullName }}/peers/peer0.{{ $orgFullName }}/tls/ca.crt
+
+{{/*
+        This value (CORE_PEER_LOCALMSPID) should change by Org
+        However, whereas the Peer Orgs are defined in crypto-config.yaml: name, domain..
+        The MSPID is defined in configtx.yaml: name, ID ...
+        How do these seemingly complementary values correspond
+        If equal why not in one file ???
+*/}}
+        - name: CORE_PEER_LOCALMSPID
+          value: {{ printf "%sMSP" $org.Name }} #Org1MSP
+        - name: CORE_TLS_ENABLED
+          value: "false"
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+{{- end }}
+{{/*
+        Once per Org
+        We need to update the Anchor Peers
+*/}}
+      - name: update-anchor-{{ $orgName }}
+        image: "{{ $.Values.image.peer.repository }}:{{ $.Values.image.peer.tag }}"
+        imagePullPolicy: {{ $.Values.image.peer.pullPolicy }}
+        workingDir: /shared #/opt/gopath/src/github.com/hyperledger/fabric/peer
+        command:
+        - peer
+        - channel
+        - update
+        args:
+        - --orderer=$(ORDERER_URL)
+        - --channelID=$(CHANNEL_ID)
+        - --file=/shared/$(CORE_PEER_LOCALMSPID).anchors.tx
+        - --cafile=/shared/crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem
+        env:
+        - name: ORDERER_URL
+          value: {{ include "hyperledger-fabric.fullname" $ }}-orderer:7050
+        - name: CHANNEL_ID
+          value: channel
+{{/*
+        Always peer0 but in the current Org
+*/}}
+        - name: CORE_PEER_ID
+          value: {{ $orgName }}-peer0
+        - name: CORE_PEER_ADDRESS
+          value: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-peer0:7051
+        - name: CORE_PEER_MSPCONFIGPATH
+          value: /shared/crypto-config/peerOrganizations/{{ $orgFullName }}/users/Admin@{{ $orgFullName }}/msp
+{{/*
+        Always peer0 but in the current Org
+*/}}
+        - name: CORE_PEER_TLS_ROOTCERT_FILE
+          value: /shared/crypto-config/peerOrganizations/{{ $orgFullName }}/peers/peer0.{{ $orgFullName }}/tls/ca.crt
+{{/*
+        This value (CORE_PEER_LOCALMSPID) should change by Org
+        However, whereas the Peer Orgs are defined in crypto-config.yaml: name, domain..
+        The MSPID is defined in configtx.yaml: name, ID ...
+        How do these seemingly complementary values correspond
+        If equal why not in one file ???
+*/}}
+        - name: CORE_PEER_LOCALMSPID
+          value: {{ printf "%sMSP" $org.Name }} #Org1MSP
+        - name: CORE_TLS_ENABLED
+          value: "false"
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc      
+{{- end }}
+...

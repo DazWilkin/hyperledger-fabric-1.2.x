@@ -1,0 +1,102 @@
+ {{- range $i, $org := .Values.cryptoconfig.PeerOrgs }}
+{{- $orgName := $org.Name | lower }}
+{{/*
+    Used to calculate peer0's ports
+*/}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-cli
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" $ }}
+    app.kubernetes.io/version: {{ $.Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" $ }}
+    chart: {{ include "hyperledger-fabric.chart" $ }}
+    release: {{ $.Release.Name }}
+    heritage: {{ $.Release.Service }}
+    component: cli
+    org: {{ $orgName }}
+spec:
+  replicas: {{ $.Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "hyperledger-fabric.name" $ }}
+      chart: {{ include "hyperledger-fabric.chart" $ }}
+      release: {{ $.Release.Name }}
+      heritage: {{ $.Release.Service }}
+      component: cli
+      org: {{ $orgName }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "hyperledger-fabric.name" $ }}
+        chart: {{ include "hyperledger-fabric.chart" $ }}
+        release: {{ $.Release.Name }}
+        heritage: {{ $.Release.Service }}
+        component: cli
+        org: {{ $orgName }}
+    spec:
+      volumes:
+      - name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+        persistentVolumeClaim:
+          claimName: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+{{/*
+        Peers use the Docker Engine socket to deploy Chaincode in containers
+*/}}          
+      - name: dockersocket
+        hostPath:
+          path: /var/run/docker.sock
+      initContainers:
+      - name: await-bootstrapped
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command:
+        - ash
+        - -c
+        - |
+          while [ ! -f /shared/bootstrapped ]; do
+            echo Awaiting /shared/bootstrapped
+            sleep 15s
+          done
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+      containers:
+      - name: {{/*{{ $.Chart.Name }}-*/}}cli
+        image: "{{ $.Values.image.cli.repository }}:{{ $.Values.image.cli.tag }}"
+        imagePullPolicy: {{ $.Values.image.cli.pullPolicy }}
+        workingDir: /opt/gopath/src/github.com/hyperledger/fabric/peer
+        command:
+        - bash
+        - -c
+        - |
+          while true; do sleep 15s; done
+        env:
+        - name: GOPATH
+          value: /opt/gopath
+        - name: CORE_VM_ENDPOINT
+          value: unix:///host/var/run/docker.sock
+        - name: CORE_PEER_ID
+          value: cli
+        - name: CORE_PEER_ADDRESS
+          value: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-peer0:7051
+{{/*
+        This value (CORE_PEER_LOCALMSPID) should change by Org
+        However, whereas the Peer Orgs are defined in crypto-config.yaml: name, domain..
+        The MSPID is defined in configtx.yaml: name, ID ...
+        How do these seemingly complementary values correspond
+        If equal why not in one file ???
+*/}}
+        - name: CORE_PEER_LOCALMSPID
+          value: {{ printf "%sMSP" $org.Name }} #Org1MSP
+        - name: CORE_TLS_ENABLED
+          value: "false"
+
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+        - mountPath: /host/var/run/docker.sock
+          name: dockersocket          
+...
+{{- end }}

@@ -1,0 +1,222 @@
+{{/*
+    Iterate over each Org defined in cryptoconfig
+    This should match the Organizations defined in configtx
+    Because of ranges, need to explicitly reference root ($)
+*/}}
+{{- range $i, $org := .Values.cryptoconfig.PeerOrgs }}
+{{- $orgName := $org.Name | lower }}
+{{/*
+    Iterate over the peers in each Organization
+    Number of peers is set in cryptoconfig.Template.Count
+    Need to disambiguate peers
+    Each is thus named by prefixing the iterator with 'peer'
+    And by using the Org's domain as defined in cryptoconfig
+    E.g. peerX.orgY.example.com
+*/}}
+{{- range $j, $peerID := until ( $org.Template.Count | int) }}
+{{/*
+    Various permutations of the Peer's ID, name and fullname
+    And the Org's name and fullname are required
+    Unclear how best to generalize the domain name (example.com)
+    orgFullName  == orgY.example.com
+    peerName     == peer0, peer1, ... peerX
+    peerFullName == peerX.orgY.example.com
+*/}}
+{{- $orgFullName  := printf "%s.example.com" $orgName }}
+{{- $peerName     := printf "peer%d" $peerID }}
+{{- $peerFullName := printf "%s.%s" $peerName $orgFullName }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-peer{{ $peerID }}
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" $ }}
+    app.kubernetes.io/version: {{ $.Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" $ }}
+    chart: {{ include "hyperledger-fabric.chart" $ }}
+    release: {{ $.Release.Name }}
+    heritage: {{ $.Release.Service }}
+    component: peer
+    org: {{ $orgName }}
+    peer: {{ $peerID | quote }}
+spec:
+  type: NodePort
+  selector:
+    app: {{ include "hyperledger-fabric.name" $ }}
+    chart: {{ include "hyperledger-fabric.chart" $ }}
+    release: {{ $.Release.Name }}
+    heritage: {{ $.Release.Service }}
+    component: peer
+    org: {{ $orgName }}
+    peer: {{ $peerID | quote }}
+  ports:
+  - protocol: TCP
+    port: 7051
+    targetPort: 7051
+    name: request
+  - protocol: TCP
+    port: 7052
+    targetPort: 7052
+    name: chaincode
+  - protocol: TCP
+    port: 7053
+    targetPort: 7053
+    name: events
+...
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-{{ $peerName }}
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" $ }}
+    app.kubernetes.io/version: {{ $.Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" $ }}
+    chart: {{ include "hyperledger-fabric.chart" $ }}
+    release: {{ $.Release.Name }}
+    heritage: {{ $.Release.Service }}
+    component: peer
+    org: {{ $orgName }}
+    peer: {{ $peerID | quote }}
+spec:
+  replicas: {{ $.Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "hyperledger-fabric.name" $ }}
+      chart: {{ include "hyperledger-fabric.chart" $ }}
+      release: {{ $.Release.Name }}
+      heritage: {{ $.Release.Service }}
+      component: peer
+      org: {{ $orgName }}
+      peer: {{ $peerID | quote }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "hyperledger-fabric.name" $ }}
+        chart: {{ include "hyperledger-fabric.chart" $ }}
+        release: {{ $.Release.Name }}
+        heritage: {{ $.Release.Service }}
+        component: peer
+        org: {{ $orgName }}
+        peer: {{ $peerID | quote }}
+    spec:
+{{/*
+        Should orderer.example.com be resolved this way?
+*/}}
+{{/*
+      hostAliases:
+      - ip: "10.121.11.131"
+        hostnames:
+        - "orderer.example.com"
+*/}}
+      volumes:
+      - name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+        persistentVolumeClaim:
+          claimName: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+{{/*
+        Peers use the Docker Engine socket to deploy Chaincode in containers
+*/}}          
+      - name: dockersocket
+        hostPath:
+          path: /var/run/docker.sock
+      initContainers:
+      - name: await-bootstrapped
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command:
+        - ash
+        - -c
+        - |
+          while [ ! -f /shared/bootstrapped ]; do
+            echo Awaiting /shared/bootstrapped
+            sleep 15s
+          done
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+      containers:
+      - name: peer{{/* $peerName */}}
+        image: "{{ $.Values.image.peer.repository }}:{{ $.Values.image.peer.tag }}"
+        imagePullPolicy: {{ $.Values.image.peer.pullPolicy }}
+        workingDir: /opt/gopath/src/github.com/hyperledger/fabric/peer
+        command:
+        - peer
+        - node
+        - start
+        args:
+        - --orderer=$(ORDERER_URL)
+        env:
+        - name: ORDERER_URL
+          value: {{ include "hyperledger-fabric.fullname" $ }}-orderer:7050
+        - name: CORE_VM_ENDPOINT
+          value: unix:///host/var/run/docker.sock
+{{/*
+        [180806] Added per Yacov's suggestion on Fabric List
+*/}}
+        - name: CORE_VM_DOCKER_ATTACHSTDOUT
+          value: "true"
+{{/*
+        [180815] Added per Yacov's suggestion by Email
+*/}}
+        - name: CORE_CHAINCODE_LOGGING_SHIM
+          value: INFO
+        - name: CORE_PEER_ID
+          value: {{ $orgName }}-{{ $peerName }}
+        - name: CORE_PEER_ADDRESS
+          value: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-{{ $peerName }}:7051
+        - name: CORE_PEER_GOSSIP_EXTERNALENDPOINT
+          value: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-{{ $peerName }}:7053
+        - name: CORE_PEER_GOSSIP_BOOTSTRAP
+{{/*
+        Use peer0 as the bootstrap basis for the other peers
+*/}}
+          value: {{ include "hyperledger-fabric.fullname" $ }}-{{ $orgName }}-peer0:7051
+{{/*
+        This value (CORE_PEER_LOCALMSPID) should change by Org
+        However, whereas the Peer Orgs are defined in crypto-config.yaml: name, domain..
+        The MSPID is defined in configtx.yaml: name, ID ...
+        How do these seemingly complementary values correspond
+        If equal why not in one file ???
+*/}}
+        - name: CORE_PEER_LOCALMSPID
+          value: {{ printf "%sMSP" $org.Name }} #Org1MSP
+        - name: CORE_LOGGING_LEVEL
+          value: INFO
+        - name: CORE_TLS_ENABLED
+          value: "false"
+        - name: CORE_PEER_GOSSIP_USELEADERELECTION
+          value: "true"
+        - name: CORE_PEER_GOSSIP_ORGLEADER
+          value: "false"
+        - name: CORE_PEER_PROFILE_ENABLED
+          value: "true"
+          # These environment values weren't used by the Fabric "First Tutorial" Example but are in the IBM Example
+        - name: CORE_PEER_LISTENADDRESS
+          value: 0.0.0.0:7051
+        - name: CORE_PEER_EVENTS_ADDRESS
+          value: 0.0.0.0:7053
+          # This one is make-or-break and definitely needed; does it need an external port too?
+        - name: CORE_PEER_CHAINCODELISTENADDRESS
+          value: 0.0.0.0:7052
+          # This one is to overcome the error message of "Received AliveMessage from a peer with the sampe PKI-ID as myself"
+        - name: CORE_PEER_MSPCONFIGPATH
+          value: /shared/crypto-config/peerOrganizations/{{ $orgFullName }}/peers/{{ $peerFullName }}/msp/
+        ports:
+        - name: grpc
+          containerPort: 7051
+          protocol: TCP
+        - name: code
+          containerPort: 7052
+          protocol: TCP
+        - name: events
+          containerPort: 7053
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+        - mountPath: /host/var/run/docker.sock
+          name: dockersocket          
+...
+{{- end }}
+{{- end }}

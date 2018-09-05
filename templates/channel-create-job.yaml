@@ -1,0 +1,153 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" $ }}-channel-create
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" $ }}
+    app.kubernetes.io/version: {{ $.Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" $ }}
+    chart: {{ include "hyperledger-fabric.chart" $ }}
+    release: {{ $.Release.Name }}
+    heritage: {{ $.Release.Service }}
+    component: channel-create
+spec:
+  template:
+    metadata:
+      labels:
+        app: {{ include "hyperledger-fabric.name" $ }}
+        chart: {{ include "hyperledger-fabric.chart" $ }}
+        release: {{ $.Release.Name }}
+        heritage: {{ $.Release.Service }}
+        component: channel-create
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+      - name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+        persistentVolumeClaim:
+          claimName: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+      initContainers:
+
+      - name: await-bootstrapped
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command:
+        - ash
+        - -c
+        - |
+          while [ ! -f /shared/bootstrapped ]; do
+            echo Awaiting /shared/bootstrapped
+            sleep 15s
+          done
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+{{/*
+        Either Org and any Peer is acceptable
+        But -- convention -- is to use Org1 and Peer0
+*/}}
+{{/*
+        [180829:dazwilkin]
+        Yacov recommended dropping this (redundant) step
+        Was causing an issue: "Principal deserialization failure (expected MSP ID Org1MSP, received SampleOrg)"
+        Removing the step avoids the problem
+        Adding CORE_PEER_LOCALMSPID: Org1MSP avoids the "SampleOrg" issue but creates another problem
+        Removing the step entirely
+*/}}
+{{/*
+      - name: await-org1-peer0
+        image: "{{ $.Values.image.cli.repository }}:{{ $.Values.image.cli.tag }}"
+        imagePullPolicy: {{ $.Values.image.cli.pullPolicy }}
+        workingDir: /shared
+        command:
+        - bash
+        - -c
+        - |
+          echo Awaiting org1-peer0
+          until peer node status
+          do
+            echo org1-peer0 is not available, sleeping
+            sleep 15s;
+          done
+          echo org1-peer0 is available
+        env:
+        - name: GOPATH
+          value: /opt/gopath
+        - name: CORE_PEER_ID
+          value: cli
+        - name: CORE_PEER_ADDRESS
+          value: {{ include "hyperledger-fabric.fullname" $ }}-org1-peer0:7051
+        - name: CORE_PEER_LOCALMSPID
+          value: Org1MSP
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc
+*/}}
+      - name: channel-create
+        image: "{{ $.Values.image.peer.repository }}:{{ $.Values.image.peer.tag }}"
+        imagePullPolicy: {{ $.Values.image.peer.pullPolicy }}
+{{/*
+        "peer channel create" generates channel.block
+        But there's no parameter to configure this location
+        Want this to be in /shared so setting workingDir
+*/}}
+        workingDir: /shared #/opt/gopath/src/github.com/hyperledger/fabric/peer
+        command:
+        - peer
+        - channel
+        - create
+        args:
+        - --orderer=$(ORDERER_URL)
+        - --channelID=$(CHANNEL_ID)
+        - --file=/shared/channel.tx
+        - --cafile=/shared/crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem
+        env:
+        - name: GOPATH
+          value: /opt/gopath
+        - name: ORDERER_URL
+          value: {{ include "hyperledger-fabric.fullname" $ }}-orderer:7050
+        - name: CHANNEL_ID
+          value: channel
+        - name: CORE_PEER_ID
+          value: cli
+        - name: CORE_PEER_ADDRESS
+          value: {{ include "hyperledger-fabric.fullname" $ }}-org1-peer0:7051
+        - name: CORE_PEER_MSPCONFIGPATH
+          value: /shared/crypto-config/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp
+{{/*
+        Always peer0 but in the current Org
+*/}}
+        - name: CORE_PEER_TLS_ROOTCERT_FILE
+          value: /shared/crypto-config/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
+{{/*
+        This value (CORE_PEER_LOCALMSPID) should change by Org
+        However, whereas the Peer Orgs are defined in crypto-config.yaml: name, domain..
+        The MSPID is defined in configtx.yaml: name, ID ...
+        How do these seemingly complementary values correspond
+        If equal why not in one file ???
+*/}}
+        - name: CORE_PEER_LOCALMSPID
+          value: Org1MSP
+        - name: CORE_TLS_ENABLED
+          value: "false"
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" $ }}-shared-pvc          
+
+{{/*
+      Here 
+*/}}
+
+      containers:
+
+      - name: {{/*{{ .Chart.Name }}-*/}}channel-created
+        image: alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - touch
+        - /shared/channel_created
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+
+...

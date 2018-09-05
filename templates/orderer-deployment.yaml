@@ -1,0 +1,107 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" . }}-orderer
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" . }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" . }}
+    chart: {{ include "hyperledger-fabric.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: orderer
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "hyperledger-fabric.name" . }}
+      chart: {{ include "hyperledger-fabric.chart" . }}
+      release: {{ .Release.Name }}
+      heritage: {{ .Release.Service }}
+      component: orderer
+  template:
+    metadata:
+      labels:
+        app: {{ include "hyperledger-fabric.name" . }}
+        chart: {{ include "hyperledger-fabric.chart" . }}
+        release: {{ .Release.Name }}
+        heritage: {{ .Release.Service }}
+        component: orderer
+    spec:
+      volumes:
+      - name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+        persistentVolumeClaim:
+          claimName: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+      initContainers:
+      - name: await-bootstrapped
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          while [ ! -f /shared/bootstrapped ]; do
+            echo Awaiting /shared/bootstrapped
+            sleep 15s
+          done
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+      containers:
+      - name: {{/*{{ .Chart.Name }}-*/}}orderer
+        image: "{{ .Values.image.orderer.repository }}:{{ .Values.image.orderer.tag }}"
+        imagePullPolicy: {{ .Values.image.orderer.pullPolicy }}
+        workingDir: /opt/gopath/src/github.com/hyperledger/fabric
+        command:
+        - orderer
+        env:
+        - name: ORDERER_GENERAL_LOGLEVEL
+          value: INFO
+        - name: ORDERER_GENERAL_LISTENADDRESS
+          value: 0.0.0.0
+        - name: ORDERER_GENERAL_GENESISMETHOD
+          value: file
+        - name: ORDERER_GENERAL_GENESISFILE
+          value: /shared/genesis.block
+        - name: ORDERER_GENERAL_LOCALMSPID
+          value: OrdererMSP
+        - name: ORDERER_GENERAL_LOCALMSPDIR
+          value: /shared/crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/msp
+        - name: ORDERER_GENERAL_TLS_ENABLED
+          value: "false"
+        ports:
+          - name: grpc
+            containerPort: 7050
+            protocol: TCP
+        volumeMounts:
+        - mountPath: /shared
+          name: {{ include "hyperledger-fabric.fullname" . }}-shared-pvc
+...
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hyperledger-fabric.fullname" . }}-orderer
+  labels:
+    app.kubernetes.io/name: {{ include "hyperledger-fabric.chart" . }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app: {{ include "hyperledger-fabric.name" . }}
+    chart: {{ include "hyperledger-fabric.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: orderer
+spec:
+  type: NodePort
+  selector:
+    app: {{ .Chart.Name }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+    component: orderer
+  ports:
+  - protocol: TCP
+    port: 7050
+    targetPort: 7050
+    name: grpc
+...
